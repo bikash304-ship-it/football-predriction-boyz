@@ -13,7 +13,7 @@ export class ApiError extends Error {
 export async function api<T>(path: string, revalidate = 30): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`${BACKEND}${path}`, { next: { revalidate } });
+    res = await fetch(`${BACKEND}${path}`, { next: { revalidate }, signal: AbortSignal.timeout(12000) });
   } catch {
     throw new ApiError(503, "The prediction service is unreachable. Showing nothing rather than unverified data.");
   }

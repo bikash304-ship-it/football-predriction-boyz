@@ -14,6 +14,9 @@ const display = Barlow_Condensed({ subsets: ["latin"], variable: "--font-display
 const sans = IBM_Plex_Sans({ subsets: ["latin"], variable: "--font-sans", weight: ["400", "500", "600"] });
 const mono = IBM_Plex_Mono({ subsets: ["latin"], variable: "--font-mono", weight: ["400", "500"] });
 
+// Every page shows live data; never pre-render against the backend at build time.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: { default: "Football Predriction Boyz", template: "%s · Football Predriction Boyz" },
   applicationName: "Football Predriction Boyz",
