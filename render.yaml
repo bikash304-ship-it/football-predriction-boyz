@@ -1,0 +1,25 @@
+# Render Blueprint: the always-on background worker (fixtures, live scores, predictions, settlement).
+# The website and API run on Vercel; the database is Supabase. All three share DATABASE_URL.
+services:
+  - type: worker
+    name: fpb-worker
+    runtime: python
+    plan: starter            # background workers are not available on Render's free plan
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.scheduler
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: API_FOOTBALL_KEY
+        sync: false          # you enter this in the Render dashboard
+      - key: DATABASE_URL
+        sync: false
+      - key: API_REQUESTS_PER_MINUTE
+        value: "250"
+      - key: HISTORY_SEASONS
+        value: "3"
+      - key: DEFAULT_TIMEZONE
+        value: Europe/Oslo
+      - key: ODDS_ENABLED
+        value: "false"
