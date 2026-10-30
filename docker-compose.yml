@@ -1,0 +1,33 @@
+# Full stack: Postgres + API + background worker + web.
+#   cp .env.example .env   (fill in API_FOOTBALL_KEY, keep DATABASE_URL as below)
+#   docker compose up --build
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_USER: fpb, POSTGRES_PASSWORD: fpb, POSTGRES_DB: fpb }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U fpb"], interval: 5s, retries: 10 }
+
+  api:
+    build: ./backend
+    env_file: .env
+    environment: { DATABASE_URL: "postgresql://fpb:fpb@db:5432/fpb" }
+    depends_on: { db: { condition: service_healthy } }
+    ports: ["8000:8000"]
+
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.scheduler"]
+    env_file: .env
+    environment: { DATABASE_URL: "postgresql://fpb:fpb@db:5432/fpb" }
+    depends_on: { db: { condition: service_healthy } }
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    environment: { BACKEND_URL: "http://api:8000" }
+    depends_on: [api]
+    ports: ["3000:3000"]
+
+volumes:
+  pgdata:

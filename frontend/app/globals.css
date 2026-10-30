@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Football Predriction Boyz — dark navy, neon green, white */
+:root,
+[data-theme="dark"] {
+  --bg: 11 18 32;        /* #0B1220 */
+  --card: 23 34 53;      /* #172235 */
+  --card2: 30 44 68;
+  --line: 44 60 88;
+  --ink: 248 250 252;    /* #F8FAFC */
+  --muted: 148 163 184;  /* #94A3B8 */
+  --neon: 34 197 94;     /* #22C55E */
+  --sky: 56 189 248;     /* #38BDF8 */
+  --warn: 251 191 36;
+  --bad: 248 113 113;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: 241 245 249;
+  --card: 255 255 255;
+  --card2: 241 245 249;
+  --line: 214 222 234;
+  --ink: 11 18 32;
+  --muted: 82 96 120;
+  --neon: 22 163 74;
+  --sky: 2 132 199;
+  --warn: 180 120 0;
+  --bad: 220 38 38;
+  color-scheme: light;
+}
+
+html, body { background: rgb(var(--bg)); color: rgb(var(--ink)); }
+body {
+  background-image:
+    radial-gradient(1200px 500px at 85% -10%, rgb(var(--neon) / 0.08), transparent 60%),
+    radial-gradient(900px 400px at -10% 10%, rgb(var(--sky) / 0.06), transparent 60%);
+  background-attachment: fixed;
+}
+
+@layer components {
+  .glass {
+    @apply rounded-2xl border border-line/60 bg-card/80 shadow-card backdrop-blur-md;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-line/70 bg-card2/70 px-2.5 py-1 text-xs font-medium text-muted;
+  }
+  .chip-on {
+    @apply border-neon/60 bg-neon/10 text-neon;
+  }
+  .h-section {
+    @apply font-display text-sm font-semibold uppercase tracking-[0.14em] text-muted;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+  .skeleton {
+    @apply relative overflow-hidden rounded-lg bg-card2/80;
+  }
+  .skeleton::after {
+    content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.06), transparent);
+    animation: shimmer 1.6s infinite;
+  }
+  .demo-tag {
+    @apply inline-flex items-center rounded-md border border-warn/50 bg-warn/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-warn;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+::-webkit-scrollbar { height: 6px; width: 8px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--line)); border-radius: 8px; }
