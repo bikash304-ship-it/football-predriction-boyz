@@ -92,6 +92,39 @@ async def _upsert_fixture(c, f: FixtureDTO, league_db_id: int) -> int:
     return r["id"]
 
 
+_FIXTURE_UPSERT = """INSERT INTO fixtures(provider_id, league_id, season_year, round, kickoff_utc, status, status_long, elapsed,
+                                home_team_id, away_team_id, venue, city, goals_home, goals_away, ft_home, ft_away, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+           ON CONFLICT (provider, provider_id) DO UPDATE SET
+             round=EXCLUDED.round, kickoff_utc=EXCLUDED.kickoff_utc, status=EXCLUDED.status, status_long=EXCLUDED.status_long,
+             elapsed=EXCLUDED.elapsed, venue=EXCLUDED.venue, city=EXCLUDED.city, goals_home=EXCLUDED.goals_home,
+             goals_away=EXCLUDED.goals_away, ft_home=EXCLUDED.ft_home, ft_away=EXCLUDED.ft_away, updated_at=now()"""
+
+
+async def _bulk_upsert_fixtures(c, fixtures: list[FixtureDTO], league_db_id: int) -> int:
+    """Batched upsert (psycopg pipelines executemany), so hundreds of rows cost a few round-trips."""
+    if not fixtures:
+        return 0
+    teams = {}
+    for f in fixtures:
+        teams[f.home.provider_id] = f.home
+        teams[f.away.provider_id] = f.away
+    async with c.cursor() as cur:
+        await cur.executemany(
+            """INSERT INTO teams(provider_id, name, logo_url) VALUES (%s,%s,%s)
+               ON CONFLICT (provider, provider_id) DO UPDATE SET name=EXCLUDED.name,
+                 logo_url=COALESCE(EXCLUDED.logo_url, teams.logo_url)""",
+            [(t.provider_id, t.name, t.logo_url) for t in teams.values()])
+        rows = await (await c.execute("SELECT id, provider_id FROM teams WHERE provider='api-football' AND provider_id = ANY(%s)",
+                                      (list(teams),))).fetchall()
+        tid = {r["provider_id"]: r["id"] for r in rows}
+        await cur.executemany(_FIXTURE_UPSERT, [
+            (f.provider_id, league_db_id, f.season, f.round, f.kickoff_utc, f.status, f.status_long, f.elapsed,
+             tid[f.home.provider_id], tid[f.away.provider_id], f.venue, f.city, f.goals_home, f.goals_away, f.ft_home, f.ft_away)
+            for f in fixtures])
+    return len(fixtures)
+
+
 async def _current_seasons(c) -> dict[int, int]:
     rows = await (await c.execute("SELECT league_id, year FROM seasons WHERE is_current")).fetchall()
     return {r["league_id"]: r["year"] for r in rows}
@@ -140,54 +173,79 @@ async def job_fixtures():
                     st["details"][l.slug] = "no current season (run coverage)"
                     continue
                 fx = await provider().fixtures(l.provider_id, seasons[lid], today - timedelta(days=1), today + timedelta(days=8))
-                for f in fx:
-                    await _upsert_fixture(c, f, lid)
+                await _bulk_upsert_fixtures(c, fx, lid)
                 st["items"] += len(fx)
                 st["details"][l.slug] = len(fx)
 
 
 async def job_history():
-    """Nightly: full season fixtures for current + previous seasons, standings, and xG for new results."""
+    """Nightly: full season fixtures for current + previous seasons, standings, and xG for new results.
+    Each league is handled independently, so one league's problem doesn't stop the others."""
     async with job_log("history") as st:
         pool = await get_pool()
+        errors = []
         async with pool.connection() as c:
             ids, seasons = await _league_ids(c), await _current_seasons(c)
             for l in LEAGUES:
                 lid = ids[l.provider_id]
                 if lid not in seasons:
                     continue
-                cur = seasons[lid]
-                for yr in range(cur - settings.history_seasons + 1, cur + 1):
-                    for f in await provider().season_fixtures(l.provider_id, yr):
-                        await _upsert_fixture(c, f, lid)
-                        st["items"] += 1
-                await c.execute("INSERT INTO seasons(league_id, year) SELECT %s, g FROM generate_series(%s,%s) g ON CONFLICT DO NOTHING",
-                                (lid, cur - settings.history_seasons + 1, cur))
-                for s in await provider().standings(l.provider_id, cur):
-                    team = await (await c.execute("SELECT id FROM teams WHERE provider_id=%s", (s.team_provider_id,))).fetchone()
-                    if not team:
-                        continue
-                    await c.execute(
-                        """INSERT INTO standings(league_id, season_year, team_id, rank, points, played, won, drawn, lost,
-                                                 goals_for, goals_against, form, group_name, updated_at)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
-                           ON CONFLICT (league_id, season_year, team_id) DO UPDATE SET rank=EXCLUDED.rank, points=EXCLUDED.points,
-                             played=EXCLUDED.played, won=EXCLUDED.won, drawn=EXCLUDED.drawn, lost=EXCLUDED.lost,
-                             goals_for=EXCLUDED.goals_for, goals_against=EXCLUDED.goals_against, form=EXCLUDED.form,
-                             group_name=EXCLUDED.group_name, updated_at=now()""",
-                        (lid, cur, team["id"], s.rank, s.points, s.played, s.won, s.drawn, s.lost, s.goals_for,
-                         s.goals_against, s.form, s.group))
-                cov = await (await c.execute("SELECT coverage FROM leagues WHERE id=%s", (lid,))).fetchone()
-                if (cov["coverage"] or {}).get("statistics"):
-                    missing = await (await c.execute(
-                        """SELECT f.id, f.provider_id FROM fixtures f LEFT JOIN match_statistics m ON m.fixture_id=f.id
-                           WHERE f.league_id=%s AND f.status IN ('FT','AET','PEN') AND m.fixture_id IS NULL
-                           ORDER BY f.kickoff_utc DESC LIMIT 60""", (lid,))).fetchall()
-                    for r in missing:
-                        ms = await provider().match_stats(r["provider_id"])
-                        if ms:
-                            await c.execute("INSERT INTO match_statistics(fixture_id, home_xg, away_xg, stats) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                                            (r["id"], ms.home_xg, ms.away_xg, json.dumps(ms.stats)))
+                try:
+                    st["details"][l.slug] = await _league_history_sync(c, l, lid, seasons[lid])
+                    st["items"] += st["details"][l.slug]["fixtures"]
+                except Exception as e:  # keep going with the other leagues
+                    log.exception("history failed for %s", l.slug)
+                    errors.append(f"{l.slug}: {type(e).__name__}: {e}")
+                    st["details"][l.slug] = {"error": str(e)[:300]}
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+
+async def _league_history_sync(c, l, lid: int, cur: int) -> dict:
+    out = {"fixtures": 0, "seasons_skipped": [], "standings": 0, "xg": 0}
+    first = cur - settings.history_seasons + 1
+    for yr in range(first, cur + 1):
+        if yr < cur:
+            # Finished past seasons only need downloading once.
+            done = await (await c.execute(
+                """SELECT count(*) FILTER (WHERE status IN ('FT','AET','PEN','PST','CANC','ABD','AWD','WO')) AS fin, count(*) AS n
+                   FROM fixtures WHERE league_id=%s AND season_year=%s""", (lid, yr))).fetchone()
+            if done["n"] > 50 and done["fin"] >= done["n"] * 0.98:
+                out["seasons_skipped"].append(yr)
+                continue
+        out["fixtures"] += await _bulk_upsert_fixtures(c, await provider().season_fixtures(l.provider_id, yr), lid)
+    await c.execute("INSERT INTO seasons(league_id, year) SELECT %s::int, g FROM generate_series(%s::int, %s::int) g ON CONFLICT DO NOTHING",
+                    (lid, first, cur))
+    rows = await provider().standings(l.provider_id, cur)
+    if rows:
+        tmap = {r["provider_id"]: r["id"] for r in await (await c.execute(
+            "SELECT id, provider_id FROM teams WHERE provider='api-football' AND provider_id = ANY(%s)",
+            ([s.team_provider_id for s in rows],))).fetchall()}
+        params = [(lid, cur, tmap[s.team_provider_id], s.rank, s.points, s.played, s.won, s.drawn, s.lost, s.goals_for,
+                   s.goals_against, s.form, s.group) for s in rows if s.team_provider_id in tmap]
+        async with c.cursor() as cu:
+            await cu.executemany(
+                """INSERT INTO standings(league_id, season_year, team_id, rank, points, played, won, drawn, lost,
+                                         goals_for, goals_against, form, group_name, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, now())
+                   ON CONFLICT (league_id, season_year, team_id) DO UPDATE SET rank=EXCLUDED.rank, points=EXCLUDED.points,
+                     played=EXCLUDED.played, won=EXCLUDED.won, drawn=EXCLUDED.drawn, lost=EXCLUDED.lost,
+                     goals_for=EXCLUDED.goals_for, goals_against=EXCLUDED.goals_against, form=EXCLUDED.form,
+                     group_name=EXCLUDED.group_name, updated_at=now()""", params)
+        out["standings"] = len(params)
+    cov = await (await c.execute("SELECT coverage FROM leagues WHERE id=%s", (lid,))).fetchone()
+    if (cov["coverage"] or {}).get("statistics"):
+        missing = await (await c.execute(
+            """SELECT f.id, f.provider_id FROM fixtures f LEFT JOIN match_statistics m ON m.fixture_id=f.id
+               WHERE f.league_id=%s AND f.status IN ('FT','AET','PEN') AND m.fixture_id IS NULL
+               ORDER BY f.kickoff_utc DESC LIMIT 60""", (lid,))).fetchall()
+        for r in missing:
+            ms = await provider().match_stats(r["provider_id"])
+            # Store a row even without xG so the same match isn't re-requested every night.
+            await c.execute("INSERT INTO match_statistics(fixture_id, home_xg, away_xg, stats) VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                            (r["id"], ms.home_xg if ms else None, ms.away_xg if ms else None, json.dumps(ms.stats if ms else {})))
+            out["xg"] += 1
+    return out
 
 
 async def job_context():
