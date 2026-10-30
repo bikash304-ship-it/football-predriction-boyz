@@ -27,15 +27,7 @@ from .services import jobs
 log = logging.getLogger("scheduler")
 
 
-async def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    if settings.demo_mode:
-        log.error("Live data is not configured (API_FOOTBALL_KEY and DATABASE_URL). The scheduler only runs in live mode.")
-        return
-    await migrate()
-    await jobs.seed_leagues()
-    await jobs.daily_pipeline()  # warm start
-
+def build_scheduler() -> AsyncIOScheduler:
     s = AsyncIOScheduler(timezone="UTC", job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 120})
     s.add_job(jobs.job_fixtures, CronTrigger(minute=5), id="fixtures")
     s.add_job(jobs.job_live, IntervalTrigger(seconds=45), id="live")
@@ -44,6 +36,32 @@ async def main():
     s.add_job(jobs.job_settle, IntervalTrigger(minutes=10), id="settle")
     s.add_job(jobs.job_odds, IntervalTrigger(hours=2), id="odds")
     s.add_job(jobs.daily_pipeline, CronTrigger(hour=4, minute=15), id="daily")
+    return s
+
+
+_running: AsyncIOScheduler | None = None
+
+
+async def start_in_background():
+    """Start the jobs inside an already-running event loop (the API process)."""
+    global _running
+    if _running is not None:
+        return
+    _running = build_scheduler()
+    _running.start()
+    asyncio.get_running_loop().create_task(jobs.daily_pipeline())  # warm start without blocking startup
+    log.info("scheduler started in API process with %d jobs", len(_running.get_jobs()))
+
+
+async def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if settings.demo_mode:
+        log.error("Live data is not configured (API_FOOTBALL_KEY and DATABASE_URL). The scheduler only runs in live mode.")
+        return
+    await migrate()
+    await jobs.seed_leagues()
+    await jobs.daily_pipeline()  # warm start
+    s = build_scheduler()
     s.start()
     log.info("scheduler started with %d jobs", len(s.get_jobs()))
 

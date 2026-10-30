@@ -196,8 +196,14 @@ async def job_context():
         pool = await get_pool()
         async with pool.connection() as c:
             rows = await (await c.execute(
+                # Quota-aware: injuries at most every 6 h (hourly in the last 3 h), lineups only near kickoff until found.
                 """SELECT f.id, f.provider_id, f.kickoff_utc, l.coverage FROM fixtures f JOIN leagues l ON l.id=f.league_id
-                   WHERE f.status IN ('NS','TBD') AND f.kickoff_utc BETWEEN now() AND now() + interval '48 hours'""")).fetchall()
+                   LEFT JOIN fixture_context fc ON fc.fixture_id=f.id
+                   WHERE f.status IN ('NS','TBD') AND f.kickoff_utc BETWEEN now() AND now() + interval '48 hours'
+                     AND (fc.injuries_checked_at IS NULL
+                          OR fc.injuries_checked_at < now() - interval '6 hours'
+                          OR (f.kickoff_utc < now() + interval '3 hours' AND fc.injuries_checked_at < now() - interval '1 hour')
+                          OR (f.kickoff_utc < now() + interval '75 minutes' AND fc.lineups IS NULL))""")).fetchall()
             for r in rows:
                 cov = r["coverage"] or {}
                 inj = lin = None

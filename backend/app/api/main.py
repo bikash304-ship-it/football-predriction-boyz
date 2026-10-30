@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
 import logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -65,6 +66,10 @@ async def startup():
         from ..services.jobs import seed_leagues
         await migrate()
         await seed_leagues()
+        # On a single always-on host (e.g. Render) the API process also runs the scheduled jobs.
+        if os.getenv("RUN_SCHEDULER", "").lower() in {"1", "true", "yes"}:
+            from ..scheduler import start_in_background
+            await start_in_background()
 
 
 @app.get("/api/health")
