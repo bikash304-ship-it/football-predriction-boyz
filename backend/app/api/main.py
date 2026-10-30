@@ -84,8 +84,13 @@ async def startup():
     else:
         from ..db.pool import migrate
         from ..services.jobs import seed_leagues
-        await migrate()
-        await seed_leagues()
+        try:
+            await migrate()
+            await seed_leagues()
+        except Exception:
+            # Keep serving: requests will report the database problem instead of the whole API crashing.
+            logging.getLogger("api").exception("database not reachable at startup")
+            return
         # On a single always-on host (e.g. Render) the API process also runs the scheduled jobs.
         if os.getenv("RUN_SCHEDULER", "").lower() in {"1", "true", "yes"}:
             from ..scheduler import start_in_background

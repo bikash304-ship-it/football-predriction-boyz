@@ -17,7 +17,7 @@ _pool: AsyncConnectionPool | None = None
 async def get_pool() -> AsyncConnectionPool:
     global _pool
     if _pool is None:
-        _pool = AsyncConnectionPool(settings.database_url, min_size=1, max_size=10, open=False,
+        _pool = AsyncConnectionPool(settings.database_url, min_size=1, max_size=5, open=False, timeout=10,
                                     kwargs={"row_factory": dict_row, "autocommit": True})
         await _pool.open()
     return _pool
