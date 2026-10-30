@@ -26,13 +26,21 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
+      - name: Check secrets are present
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          [ -n "$API_FOOTBALL_KEY" ] || { echo "::error::Repository secret API_FOOTBALL_KEY is missing or empty"; exit 1; }
+          [ -n "$DATABASE_URL" ] || { echo "::error::Repository secret DATABASE_URL is missing or empty"; exit 1; }
+          echo "::notice::Secrets present (key length ${#API_FOOTBALL_KEY})"
       - name: Choose jobs
         id: pick
         run: |

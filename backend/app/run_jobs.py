@@ -34,5 +34,17 @@ async def main(names: list[str]) -> int:
     return 0
 
 
+def _gh_error(msg: str):
+    """Surface failures as GitHub annotations (visible on the run page without opening logs)."""
+    print("::error::" + msg.replace("\n", " | ")[:900], flush=True)
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main(sys.argv[1:] or ["fixtures", "context", "predict", "settle"])))
+    try:
+        code = asyncio.run(main(sys.argv[1:] or ["fixtures", "context", "predict", "settle"]))
+    except Exception as e:  # noqa: BLE001
+        _gh_error(f"{type(e).__name__}: {e}")
+        raise
+    if code:
+        _gh_error(f"run_jobs exited with code {code} (check that API_FOOTBALL_KEY and DATABASE_URL secrets are set)")
+    raise SystemExit(code)
