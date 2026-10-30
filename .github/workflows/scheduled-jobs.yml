@@ -1,0 +1,51 @@
+name: Scheduled jobs
+
+# Free always-on updates. Runs whether or not anyone opens the website.
+# Needs two repository secrets: API_FOOTBALL_KEY and DATABASE_URL.
+# GitHub may start scheduled runs a few minutes late at busy times.
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # live scores + settlement
+    - cron: "5 * * * *"      # fixtures, team news, predictions
+    - cron: "15 4 * * *"     # full daily refresh (coverage, history, standings, xG)
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Jobs to run (daily, coverage, fixtures, history, context, predict, live, settle)"
+        default: "daily"
+
+concurrency:
+  group: scheduled-jobs
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Choose jobs
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            "*/10 * * * *") echo "jobs=live settle" >> "$GITHUB_OUTPUT" ;;
+            "5 * * * *")    echo "jobs=fixtures context predict settle" >> "$GITHUB_OUTPUT" ;;
+            "15 4 * * *")   echo "jobs=daily" >> "$GITHUB_OUTPUT" ;;
+            *)              echo "jobs=${{ github.event.inputs.jobs || 'daily' }}" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Run
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          API_REQUESTS_PER_MINUTE: "250"
+          HISTORY_SEASONS: "3"
+        run: python -m app.run_jobs ${{ steps.pick.outputs.jobs }}

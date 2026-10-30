@@ -110,7 +110,13 @@ The browser never talks to the backend directly: Next.js server components call 
 
 **Single VPS / any Docker host:** `docker compose up -d --build` behind a reverse proxy (Caddy/Nginx) for HTTPS.
 
-**Managed split (recommended for low maintenance):**
+**Free setup (what this repository is configured for):**
+* Website + API: Vercel Hobby (two projects: `frontend/` and `backend/`).
+* Database: Supabase free (use the **session pooler** connection string, port 5432).
+* Scheduled jobs: GitHub Actions (`.github/workflows/scheduled-jobs.yml`) — live scores and settlement every 10 min, fixtures/team news/predictions hourly, full refresh daily at 04:15 UTC. Add repository secrets `API_FOOTBALL_KEY` and `DATABASE_URL`. Run it by hand from **Actions → Scheduled jobs → Run workflow**.
+* While a match is live and someone has the app open, the API also refreshes scores itself, at most once a minute.
+
+**Managed split (always-on worker):**
 * Postgres: Supabase, Neon or Railway.
 * Backend API **and** worker: Railway / Render / Fly.io — two services from `backend/` (`uvicorn app.api.main:app --host 0.0.0.0 --port $PORT` and `python -m app.scheduler`). The worker must be an always-on service, not a serverless function.
 * Frontend: Vercel (root `frontend/`, env `BACKEND_URL`) or the included Dockerfile.

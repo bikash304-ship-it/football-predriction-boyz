@@ -56,6 +56,26 @@ def _day(d: str | None, tz: str) -> date:
         raise HTTPException(400, "date must be YYYY-MM-DD")
 
 
+async def _refresh_live_if_stale(max_age_s: int = 60):
+    """Serverless-friendly live scores: when someone is looking and a match is on,
+    refresh from the provider at most once per `max_age_s` (shared across instances via the DB)."""
+    if settings.demo_mode:
+        return
+    try:
+        from ..db.pool import get_pool
+        from ..services.jobs import job_live
+        pool = await get_pool()
+        async with pool.connection() as c:
+            row = await (await c.execute(
+                "SELECT max(started_at) > now() - %s * interval '1 second' AS fresh FROM sync_logs WHERE job='live'",
+                (max_age_s,))).fetchone()
+        if row and row["fresh"]:
+            return
+        await asyncio.wait_for(job_live(), timeout=8)
+    except Exception:  # never fail a page because the live refresh failed; last verified data is served
+        logging.getLogger("api").warning("on-demand live refresh failed", exc_info=True)
+
+
 @app.on_event("startup")
 async def startup():
     if settings.demo_mode:
@@ -96,6 +116,7 @@ async def league(slug: str):
 async def fixtures(date: str | None = None, tz: str = "Europe/Oslo", league: str | None = None):
     tz = _tz(tz)
     day = _day(date, tz)
+    await _refresh_live_if_stale()
     return {"date": day.isoformat(), "timezone": tz, "fixtures": await _call(_repo().fixtures_on, day, tz, league)}
 
 
@@ -108,11 +129,13 @@ async def fixtures_week(tz: str = "Europe/Oslo"):
 
 @app.get("/api/fixtures/live")
 async def live():
+    await _refresh_live_if_stale()
     return {"fixtures": await _call(_repo().live), "fetched_at": datetime.utcnow().isoformat() + "Z"}
 
 
 @app.get("/api/fixtures/{fid}")
 async def fixture(fid: int):
+    await _refresh_live_if_stale()
     out = await _call(_repo().fixture_detail, fid)
     if not out:
         raise HTTPException(404, "fixture not found")
